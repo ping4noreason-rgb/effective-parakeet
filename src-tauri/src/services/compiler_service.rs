@@ -1,6 +1,7 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
+use std::env;
 
 use regex::Regex;
 use tempfile::TempDir;
@@ -33,11 +34,94 @@ impl CompilerService {
             .unwrap_or_else(|| "No compiler detected".to_string())
     }
 
+    fn get_exe_directory() -> Option<PathBuf> {
+        env::current_exe().ok().and_then(|exe| exe.parent().map(|p| p.to_path_buf()))
+    }
+
     fn find_compiler() -> Option<String> {
-        ["tcc", "gcc", "clang", "cc"]
-            .iter()
-            .find_map(|binary| which::which(binary).ok())
-            .map(|path| path.to_string_lossy().to_string())
+        if let Some(compiler) = Self::find_compiler_near_exe() {
+            return Some(compiler);
+        }
+        
+        Self::find_compiler_in_path()
+    }
+
+    fn find_compiler_near_exe() -> Option<String> {
+        let exe_dir = Self::get_exe_directory()?;
+        
+        let candidate_paths = vec![
+            exe_dir.join("tools").join("tcc").join("tcc.exe"),
+            exe_dir.join("tools").join("tcc").join("bin").join("tcc.exe"),
+            exe_dir.join("bin").join("tcc").join("tcc.exe"),
+            exe_dir.join("compilers").join("tcc").join("tcc.exe"),
+            exe_dir.join("tcc").join("tcc.exe"),
+            
+            exe_dir.join("tools").join("mingw64").join("bin").join("gcc.exe"),
+            exe_dir.join("mingw64").join("bin").join("gcc.exe"),
+            exe_dir.join("bin").join("gcc.exe"),
+            
+            exe_dir.join("tools").join("clang").join("bin").join("clang.exe"),
+            exe_dir.join("clang").join("bin").join("clang.exe"),
+        ];
+        
+        for path in candidate_paths {
+            if path.exists() {
+                tracing::info!("Found compiler at: {}", path.display());
+                return Some(path.to_string_lossy().to_string());
+            }
+        }
+        
+        Self::find_compiler_recursive(&exe_dir)
+    }
+
+    fn find_compiler_recursive(exe_dir: &Path) -> Option<String> {
+        let target_names = ["tcc.exe", "gcc.exe", "clang.exe"];
+        
+        for name in target_names {
+            if let Some(path) = Self::search_file(exe_dir, name, 3) {
+                tracing::info!("Found {} recursively at: {}", name, path.display());
+                return Some(path.to_string_lossy().to_string());
+            }
+        }
+        
+        None
+    }
+
+    fn search_file(dir: &Path, filename: &str, max_depth: usize) -> Option<PathBuf> {
+        if max_depth == 0 {
+            return None;
+        }
+        
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for entry in entries.filter_map(|e| e.ok()) {
+                let path = entry.path();
+                
+                if path.is_file() && path.file_name()?.to_str()? == filename {
+                    return Some(path);
+                }
+                
+                if path.is_dir() {
+                    if let Some(found) = Self::search_file(&path, filename, max_depth - 1) {
+                        return Some(found);
+                    }
+                }
+            }
+        }
+        
+        None
+    }
+
+    fn find_compiler_in_path() -> Option<String> {
+        let compilers = ["tcc", "gcc", "clang", "cc"];
+        for compiler in compilers {
+            if let Ok(path) = which::which(compiler) {
+                tracing::info!("Found {} in PATH: {}", compiler, path.display());
+                return Some(path.to_string_lossy().to_string());
+            }
+        }
+        
+        tracing::warn!("No C compiler found");
+        None
     }
 
     pub async fn compile(
