@@ -35,7 +35,7 @@ impl MonitorService {
 
         let mut sys = self.sys.lock().await;
         sys.refresh_memory();
-        sys.refresh_cpu_all();
+        sys.refresh_cpu();
 
         let ram_total = sys.total_memory();
         let ram_used = sys.used_memory();
@@ -54,6 +54,8 @@ impl MonitorService {
             disk_used += disk.total_space().saturating_sub(disk.available_space());
         }
 
+        let cpu_usage = sys.global_cpu_info().cpu_usage();
+
         let info = SystemInfo {
             ram_total,
             ram_used,
@@ -62,7 +64,7 @@ impl MonitorService {
             disk_total,
             disk_used,
             disk_free: disk_total.saturating_sub(disk_used),
-            cpu_usage: sys.global_cpu_info().cpu_usage(),
+            cpu_usage,
         };
 
         *self.last_update.lock().await = now;
