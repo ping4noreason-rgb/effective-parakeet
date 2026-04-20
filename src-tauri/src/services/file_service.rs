@@ -14,8 +14,8 @@ pub struct FileService;
 
 impl FileService {
     pub fn new() -> Self {
-        PathValidator::ensure_primary_root()
-            .unwrap_or_else(|e| warn!("Failed to prepare project root: {}", e));
+        let _ = PathValidator::ensure_primary_root()
+            .map_err(|e| warn!("Failed to prepare project root: {}", e));
         Self
     }
 
