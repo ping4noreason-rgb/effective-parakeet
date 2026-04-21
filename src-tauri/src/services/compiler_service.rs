@@ -1,5 +1,5 @@
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 use std::env;
 
@@ -130,18 +130,13 @@ impl CompilerService {
         filename: Option<&str>,
     ) -> Result<CompileResult, AppError> {
         let compiler_path = self.compiler_path.clone().ok_or_else(|| {
-            AppError::Compiler(
-                "No C compiler found. Install GCC, Clang, or TCC to use Run from the editor."
-                    .to_string(),
-            )
+            AppError::Compiler("No C compiler found".to_string())
         })?;
 
         let start = Instant::now();
         let temp_dir = TempDir::new().map_err(|e| AppError::Io(e.to_string()))?;
-
-        let src_name = filename.unwrap_or("program.c");
-        let src_path = temp_dir.path().join(src_name);
-
+        let src_path = temp_dir.path().join(filename.unwrap_or("program.c"));
+    
         #[cfg(target_os = "windows")]
         let exe_path = temp_dir.path().join("program.exe");
         #[cfg(not(target_os = "windows"))]
@@ -153,6 +148,15 @@ impl CompilerService {
         let compile_result = timeout(
             self.timeout_duration,
             tokio::task::spawn_blocking(move || {
+                #[cfg(target_os = "windows")]
+                let output = Command::new(&compiler_path_for_task)
+                    .arg(&src_path)
+                    .arg("-o")
+                    .arg(&exe_path)
+                    .creation_flags(0x08000000)
+                    .output()?;
+            
+                #[cfg(not(target_os = "windows"))]
                 let output = Command::new(&compiler_path_for_task)
                     .arg(&src_path)
                     .arg("-o")
@@ -174,8 +178,7 @@ impl CompilerService {
                     .to_string();
 
                 if output.status.success() {
-                    let program_output = self.run_program(&exe_path).await;
-
+                    let program_output = self.run_program_hidden(&exe_path).await;
                     Ok(CompileResult {
                         success: true,
                         output: program_output,
@@ -197,17 +200,12 @@ impl CompilerService {
             Ok(Ok(Err(error))) => {
                 Err(AppError::Compiler(format!("Compilation failed: {}", error)))
             }
-            Ok(Err(error)) => Err(AppError::Compiler(format!(
-                "Compilation task failed: {}",
-                error
-            ))),
-            Err(_) => Err(AppError::Timeout(
-                "Compilation timeout (30 seconds)".to_string(),
-            )),
+            Ok(Err(error)) => Err(AppError::Compiler(format!("Compilation task failed: {}", error))),
+            Err(_) => Err(AppError::Timeout("Compilation timeout (30 seconds)".to_string())),
         }
     }
 
-    async fn run_program(&self, exe_path: &Path) -> String {
+    async fn run_program_hidden(&self, exe_path: &Path) -> String {
         if !exe_path.exists() {
             return "Failed to create executable".to_string();
         }
@@ -217,13 +215,29 @@ impl CompilerService {
             tokio::task::spawn_blocking({
                 let exe_path = exe_path.to_path_buf();
                 move || {
-                    let output = Command::new(&exe_path).output();
+                    #[cfg(target_os = "windows")]
+                    let output = Command::new(&exe_path)
+                        .creation_flags(0x08000000)
+                        .stdout(Stdio::piped())
+                        .stderr(Stdio::piped())
+                        .output();
+                    
+                    #[cfg(not(target_os = "windows"))]
+                    let output = Command::new(&exe_path)
+                        .stdout(Stdio::piped())
+                        .stderr(Stdio::piped())
+                        .output();
 
                     match output {
                         Ok(out) => {
                             let stdout = String::from_utf8_lossy(&out.stdout);
                             let stderr = String::from_utf8_lossy(&out.stderr);
-                            format!("{}{}", stdout, stderr)
+                            let combined = format!("{}{}", stdout, stderr);
+                            if combined.is_empty() {
+                                "Program completed successfully (no output)".to_string()
+                            } else {
+                                combined
+                            }
                         }
                         Err(error) => format!("Execution error: {}", error),
                     }
