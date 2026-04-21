@@ -42,7 +42,7 @@ impl TerminalService {
     ) -> Result<TerminalSessionInfo, AppError> {
         let cwd = Self::resolve_start_directory(initial_cwd)?;
 
-        let mut child = Command::new(Self::powershell_binary())
+        let mut cmd = Command::new(Self::powershell_binary())
             .arg("-NoLogo")
             .arg("-NoProfile")
             .arg("-NoExit")
@@ -51,7 +51,16 @@ impl TerminalService {
             .current_dir(&cwd)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
+            .stderr(Stdio::piped());
+
+        #[cfg(target_os = "windows")]
+        let mut child = cmd
+            .creation_flags(0x08000000)
+            .spawn()
+            .map_err(|e| AppError::Terminal(format!("Failed to start PowerShell: {}", e)))?;
+
+        #[cfg(not(target_os = "windows"))]
+        let mut child = cmd
             .spawn()
             .map_err(|e| AppError::Terminal(format!("Failed to start PowerShell: {}", e)))?;
 
