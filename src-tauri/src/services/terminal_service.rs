@@ -1,9 +1,11 @@
-#[cfg(target_os = "windows")]
-use std::os::windows::process::CommandExt;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
 
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{ChildStdin, Command};
