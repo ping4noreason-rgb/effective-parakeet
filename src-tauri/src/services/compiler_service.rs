@@ -1,3 +1,5 @@
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -8,6 +10,9 @@ use tempfile::TempDir;
 use tokio::time::timeout;
 
 use crate::models::{AppError, CompileResult, SyntaxError};
+
+#[cfg(target_os = "windows")]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 pub struct CompilerService {
     compiler_path: Option<String>,
@@ -55,11 +60,9 @@ impl CompilerService {
             exe_dir.join("bin").join("tcc").join("tcc.exe"),
             exe_dir.join("compilers").join("tcc").join("tcc.exe"),
             exe_dir.join("tcc").join("tcc.exe"),
-            
             exe_dir.join("tools").join("mingw64").join("bin").join("gcc.exe"),
             exe_dir.join("mingw64").join("bin").join("gcc.exe"),
             exe_dir.join("bin").join("gcc.exe"),
-            
             exe_dir.join("tools").join("clang").join("bin").join("clang.exe"),
             exe_dir.join("clang").join("bin").join("clang.exe"),
         ];
@@ -130,13 +133,18 @@ impl CompilerService {
         filename: Option<&str>,
     ) -> Result<CompileResult, AppError> {
         let compiler_path = self.compiler_path.clone().ok_or_else(|| {
-            AppError::Compiler("No C compiler found".to_string())
+            AppError::Compiler(
+                "No C compiler found. Install GCC, Clang, or TCC to use Run from the editor."
+                    .to_string(),
+            )
         })?;
 
         let start = Instant::now();
         let temp_dir = TempDir::new().map_err(|e| AppError::Io(e.to_string()))?;
-        let src_path = temp_dir.path().join(filename.unwrap_or("program.c"));
-    
+
+        let src_name = filename.unwrap_or("program.c");
+        let src_path = temp_dir.path().join(src_name);
+
         #[cfg(target_os = "windows")]
         let exe_path = temp_dir.path().join("program.exe");
         #[cfg(not(target_os = "windows"))]
@@ -145,31 +153,28 @@ impl CompilerService {
         std::fs::write(&src_path, code).map_err(|e| AppError::Io(e.to_string()))?;
 
         let compiler_path_for_task = compiler_path.clone();
+        let src_path_for_task = src_path.clone();
+        let exe_path_for_task = exe_path.clone();
+        
         let compile_result = timeout(
             self.timeout_duration,
             tokio::task::spawn_blocking(move || {
+                let mut cmd = Command::new(&compiler_path_for_task);
+                cmd.arg(&src_path_for_task)
+                   .arg("-o")
+                   .arg(&exe_path_for_task);
+                
                 #[cfg(target_os = "windows")]
-                let output = Command::new(&compiler_path_for_task)
-                    .arg(&src_path)
-                    .arg("-o")
-                    .arg(&exe_path)
-                    .creation_flags(0x08000000)
-                    .output()?;
-            
-                #[cfg(not(target_os = "windows"))]
-                let output = Command::new(&compiler_path_for_task)
-                    .arg(&src_path)
-                    .arg("-o")
-                    .arg(&exe_path)
-                    .output()?;
-
-                Ok::<_, std::io::Error>((output, exe_path, temp_dir))
+                cmd.creation_flags(CREATE_NO_WINDOW);
+                
+                let output = cmd.output()?;
+                Ok::<_, std::io::Error>((output, exe_path_for_task))
             }),
         )
         .await;
 
         match compile_result {
-            Ok(Ok(Ok((output, exe_path, _temp_dir)))) => {
+            Ok(Ok(Ok((output, exe_path)))) => {
                 let execution_time = start.elapsed().as_millis() as u64;
                 let compiler_name = Path::new(&compiler_path)
                     .file_name()
@@ -200,8 +205,13 @@ impl CompilerService {
             Ok(Ok(Err(error))) => {
                 Err(AppError::Compiler(format!("Compilation failed: {}", error)))
             }
-            Ok(Err(error)) => Err(AppError::Compiler(format!("Compilation task failed: {}", error))),
-            Err(_) => Err(AppError::Timeout("Compilation timeout (30 seconds)".to_string())),
+            Ok(Err(error)) => Err(AppError::Compiler(format!(
+                "Compilation task failed: {}",
+                error
+            ))),
+            Err(_) => Err(AppError::Timeout(
+                "Compilation timeout (30 seconds)".to_string(),
+            )),
         }
     }
 
@@ -215,18 +225,15 @@ impl CompilerService {
             tokio::task::spawn_blocking({
                 let exe_path = exe_path.to_path_buf();
                 move || {
-                    #[cfg(target_os = "windows")]
-                    let output = Command::new(&exe_path)
-                        .creation_flags(0x08000000)
-                        .stdout(Stdio::piped())
-                        .stderr(Stdio::piped())
-                        .output();
+                    let mut cmd = Command::new(&exe_path);
                     
-                    #[cfg(not(target_os = "windows"))]
-                    let output = Command::new(&exe_path)
-                        .stdout(Stdio::piped())
-                        .stderr(Stdio::piped())
-                        .output();
+                    #[cfg(target_os = "windows")]
+                    cmd.creation_flags(CREATE_NO_WINDOW);
+                    
+                    cmd.stdout(Stdio::piped())
+                       .stderr(Stdio::piped());
+                    
+                    let output = cmd.output();
 
                     match output {
                         Ok(out) => {
@@ -275,14 +282,17 @@ impl CompilerService {
                     .unwrap_or_default()
                     .to_ascii_lowercase();
 
-                let mut command = Command::new(&compiler_path);
-                command.arg("-c").arg(&src_path);
+                let mut cmd = Command::new(&compiler_path);
+                cmd.arg("-c").arg(&src_path);
+                
+                #[cfg(target_os = "windows")]
+                cmd.creation_flags(CREATE_NO_WINDOW);
 
                 if compiler_name != "tcc" {
-                    command.arg("-fsyntax-only");
+                    cmd.arg("-fsyntax-only");
                 }
 
-                let output = command.output()?;
+                let output = cmd.output()?;
                 Ok::<_, std::io::Error>(String::from_utf8_lossy(&output.stderr).to_string())
             }),
         )
