@@ -1,4 +1,5 @@
-use std::collections::HashMap;
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -12,6 +13,9 @@ use uuid::Uuid;
 
 use crate::models::{AppError, TerminalOutputEvent, TerminalSessionInfo};
 use crate::utils::path_validator::PathValidator;
+
+#[cfg(target_os = "windows")]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 const READY_MARKER: &str = "__CAT_EDITOR_READY__";
 const CWD_MARKER: &str = "__CAT_EDITOR_CWD__:";
@@ -42,7 +46,8 @@ impl TerminalService {
     ) -> Result<TerminalSessionInfo, AppError> {
         let cwd = Self::resolve_start_directory(initial_cwd)?;
 
-        let mut cmd = Command::new(Self::powershell_binary())
+        let mut command = Command::new(Self::powershell_binary());
+        command
             .arg("-NoLogo")
             .arg("-NoProfile")
             .arg("-NoExit")
@@ -52,15 +57,11 @@ impl TerminalService {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-
+        
         #[cfg(target_os = "windows")]
-        let mut child = cmd
-            .creation_flags(0x08000000)
-            .spawn()
-            .map_err(|e| AppError::Terminal(format!("Failed to start PowerShell: {}", e)))?;
-
-        #[cfg(not(target_os = "windows"))]
-        let mut child = cmd
+        command.creation_flags(CREATE_NO_WINDOW);
+        
+        let mut child = command
             .spawn()
             .map_err(|e| AppError::Terminal(format!("Failed to start PowerShell: {}", e)))?;
 
